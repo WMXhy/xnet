@@ -1,6 +1,6 @@
 # xnet
 
-[English](README.md)
+[详细使用指南](docs/usage.zh-CN.md) · [English](README.md)
 
 xnet 是面向 Linux 和 WSL 2 的 C++17 IPv4 TCP 服务端库。它使用非阻塞套接字和 epoll，可在一个或多个 I/O 线程上处理连接。应用程序通过回调接收原始字节，并自行定义协议。
 

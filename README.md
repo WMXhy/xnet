@@ -1,6 +1,6 @@
 # xnet
 
-[简体中文](README.zh-CN.md)
+[Detailed usage guide](docs/usage.md) · [简体中文](README.zh-CN.md)
 
 xnet is a C++17 library for IPv4 TCP servers on Linux and WSL 2. It uses nonblocking sockets and epoll to handle connections across one or more I/O threads. Applications receive raw bytes through callbacks and define their own protocol.
 
