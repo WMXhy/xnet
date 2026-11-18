@@ -1,0 +1,37 @@
+# Local build directories
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+
+# CMake and test output
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+DartConfiguration.tcl
+Testing/
+compile_commands.json
+/Makefile
+/build.ninja
+/.ninja_*
+/xnet_loopback_test
+
+# Compiled output and crash dumps
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+/core
+/core.[0-9]*
+
+# Editor and OS files
+/.vscode/
+/.idea/
+.cache/
+.DS_Store
+Thumbs.db
+*.swp
