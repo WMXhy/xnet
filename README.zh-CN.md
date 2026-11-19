@@ -48,7 +48,10 @@ int main() {
     xnet::ServerCallbacks callbacks;
     callbacks.on_bytes = [](const xnet::Connection::Ptr& connection,
                             std::string_view bytes) {
-        connection->send(std::vector<char>(bytes.begin(), bytes.end()));
+        if (connection->send(std::vector<char>(bytes.begin(), bytes.end())) ==
+            xnet::SendResult::QueueFull) {
+            connection->close();
+        }
     };
 
     xnet::TcpServer server(options, std::move(callbacks));
@@ -59,6 +62,6 @@ int main() {
 ## 回调和停机
 
 - `on_open`、`on_bytes`、`on_read_end` 和 `on_close` 在连接所属的 I/O 线程上运行。不同连接的回调可能并发执行。
-- `on_bytes` 收到的字节视图只在当前回调内有效。如果需要在回调结束后访问这些字节，应先复制。解析 TCP 字节流时，需考虑任意分片边界。
+- `on_bytes` 收到的字节视图只在当前回调内有效。如果需要在回调结束后访问这些字节，应先复制。解析 TCP 字节流时，需考虑任意分片边界。连接达到待发送字节上限时，应处理 `SendResult::QueueFull`。
 - 在线程池等其他线程处理请求期间，可在 I/O 回调中调用 `beginWork()` 暂时保留连接，把响应交给 `send()` 后再调用 `finishWork()`。`on_read_end` 表示对端已结束发送。
 - `run()` 会阻塞调用线程。需要有序停机时，从单独的管理线程调用 `stop()`，并在销毁服务端之前等待运行 `run()` 的线程退出。`stop()` 停止接受新连接和读取字节，在 I/O 线程仍运行时执行可选的停机回调，随后排空待发送数据。发送超时从停机回调返回后开始计时。请在该回调结束后再调用同一服务端的 run 或 stop 方法。

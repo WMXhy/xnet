@@ -70,7 +70,11 @@ int main() {
                 for (char byte : bytes) {
                     if (byte == '\n') {
                         line.push_back('\n');
-                        peer->send(std::vector<char>(line.begin(), line.end()));
+                        if (peer->send(std::vector<char>(line.begin(), line.end())) !=
+                            xnet::SendResult::Queued) {
+                            peer->close();
+                            return;
+                        }
                         line.clear();
                     } else if (line.size() == max_line_length) {
                         peer->close();
@@ -122,6 +126,7 @@ In another terminal, run `nc 127.0.0.1 PORT` with `PORT` replaced by the printed
 | `port` | `0` | A port from 0 to 65535. Use `0` for an OS-assigned port and read it with `server.port()` once the listener is ready. |
 | `io_threads` | `1` | A positive number of I/O threads. Callbacks for connections on different threads may execute concurrently. |
 | `backlog` | `5` | A positive listener backlog for pending connections. |
+| `max_pending_bytes` | 4 MiB | Per-connection limit for admitted bytes still held by xnet. Set it to `0` to allow only empty sends. |
 
 | Callback | When to use it |
 | --- | --- |
@@ -136,7 +141,7 @@ Callbacks for one connection run on its owning I/O thread. Synchronize access to
 
 [`Connection::Ptr`](../include/xnet/connection.hpp) is a shared handle. `id()` identifies the connection within its server. `isClosed()` reports its current state. A retained handle can outlive the network connection.
 
-- `send(std::vector<char>)` takes ownership of the bytes and queues them for transmission. Use an application-level acknowledgment if you need confirmation that the peer processed a reply.
+- `send(std::vector<char>)` takes ownership of the bytes. It returns `Queued` when xnet accepts them, `QueueFull` when the bytes would exceed the limit, or `Closed` when the connection has stopped accepting sends. Successfully written bytes free room for another send. Use an application-level acknowledgment if you need confirmation that the peer processed a reply.
 - `close()` closes immediately on the owning I/O thread and requests a close when called elsewhere. Closing explicitly can discard pending output. Use `armIdle(timeout)` to start or reset an idle timer. The timer is opt-in and closes the connection immediately on expiry.
 - `post(task)` schedules state updates on the owning I/O thread and reports whether the task was accepted. It can execute inline when called on that thread. An accepted task can run after the connection closes. Check `isClosed()` inside the task if it needs an open connection.
 
@@ -156,7 +161,7 @@ Call `stop()` from a management thread outside the server's callbacks. For an ap
 
 1. xnet stops accepting connections and dispatching read events.
 2. xnet runs the optional hook on the calling thread while the I/O loops can still process replies and posted tasks.
-3. After the hook returns, xnet drains connections. The flush timeout starts at this step and bounds the socket-drain phase. The default is five seconds.
+3. After the hook returns, xnet drains connections. New sends and posts are rejected once a connection enters this phase. The flush timeout starts at this step and bounds the socket-drain phase. The default is five seconds.
 4. Once `stop()` returns, join the thread that called `run()` before destroying the server. Keep lifecycle calls for the same server outside the shutdown hook. If the hook throws, `stop()` cleans up first and then propagates the exception.
 
 ## Use the low-level buffer

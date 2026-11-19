@@ -70,7 +70,11 @@ int main() {
                 for (char byte : bytes) {
                     if (byte == '\n') {
                         line.push_back('\n');
-                        peer->send(std::vector<char>(line.begin(), line.end()));
+                        if (peer->send(std::vector<char>(line.begin(), line.end())) !=
+                            xnet::SendResult::Queued) {
+                            peer->close();
+                            return;
+                        }
                         line.clear();
                     } else if (line.size() == max_line_length) {
                         peer->close();
@@ -122,6 +126,7 @@ cmake --build build
 | `port` | `0` | 取值范围为 0 到 65535。设为 `0` 时由系统分配端口，监听就绪后通过 `server.port()` 读取。 |
 | `io_threads` | `1` | I/O 线程数，须为正数。分配到不同线程的连接可以并行执行回调。 |
 | `backlog` | `5` | 等待服务端接入的连接队列参数，须为正数。 |
+| `max_pending_bytes` | 4 MiB | 单连接已接收但仍由 xnet 持有的待发送字节上限。设为 `0` 时只接受空发送。 |
 
 | 回调 | 用法 |
 | --- | --- |
@@ -136,7 +141,7 @@ cmake --build build
 
 [`Connection::Ptr`](../include/xnet/connection.hpp) 是共享连接句柄。`id()` 可在服务端实例内标识连接，`isClosed()` 用于查询当前关闭状态。持有的句柄可以比网络连接存活更久。
 
-- `send(std::vector<char>)` 接管字节并排队发送。如果业务要确认对端已处理响应，应在应用协议中定义确认消息。
+- `send(std::vector<char>)` 接管待发送数据。接收成功时返回 `Queued`，超过上限时返回 `QueueFull`，连接关闭或停止接收发送请求时返回 `Closed`。写入套接字的字节会释放发送额度。如果业务要确认对端已处理响应，应在应用协议中定义确认消息。
 - `close()` 在所属 I/O 线程立即关闭连接，在其他线程提交关闭请求。主动关闭可能丢弃待发送数据。`armIdle(timeout)` 用于主动启用或重置空闲定时器，到期时立即关闭连接。
 - `post(task)` 将状态更新投递到所属 I/O 线程，并返回任务是否被接收。在所属线程调用时，任务可以直接执行。已接收的任务可能在连接关闭后运行。任务需要操作仍打开的连接时，请在任务内检查 `isClosed()`。
 
@@ -156,7 +161,7 @@ I/O 回调应尽快返回。需要执行耗时工作时，先解析完整请求�
 
 1. xnet 停止接入连接和派发接收事件。
 2. xnet 在调用 `stop()` 的线程运行可选回调。此时 I/O 循环仍可处理响应和投递的任务。
-3. 回调返回后，xnet 排空连接。发送排空超时从这一步开始计时，默认是五秒。
+3. 回调返回后，xnet 排空连接。连接进入排空阶段后拒绝新的发送和投递。发送排空超时从这一步开始计时，默认是五秒。
 4. `stop()` 返回后，等待运行 `run()` 的线程退出，再销毁服务端。对同一服务端的生命周期调用应在停机回调之外进行。停机回调抛出异常时，`stop()` 会先完成清理，再将异常传给调用方。
 
 ## 使用底层缓冲区

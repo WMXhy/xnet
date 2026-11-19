@@ -13,7 +13,10 @@ void checkClosedConnection(const xnet::Connection::Ptr& connection) {
     }
 
     const auto id = connection->id();
-    connection->send(std::vector<char>{'x'});
+    if (connection->send(std::vector<char>{'x'}) != xnet::SendResult::Closed ||
+        connection->post([] {})) {
+        throw std::runtime_error("closed connection accepted late work");
+    }
     connection->close();
     if (!connection->isClosed() || connection->id() != id) {
         throw std::runtime_error("closed connection changed after late send or close");

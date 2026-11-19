@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cassert>
 #include <cerrno>
+#include <mutex>
 #include <optional>
 #include <sys/epoll.h>
 #include <unistd.h>
@@ -14,11 +15,19 @@
 namespace xnet {
 
 struct Connection::Impl {
-    Impl(int descriptor, const std::shared_ptr<detail::EventLoop>& owner, std::uint64_t connection_id)
-        : fd(descriptor), loop(owner), id(connection_id) {}
+    Impl(int descriptor, const std::shared_ptr<detail::EventLoop>& owner,
+         std::uint64_t connection_id, std::size_t limit)
+        : fd(descriptor), loop(owner), id(connection_id), max_pending_bytes(limit) {}
 
     ~Impl() {
         if (fd >= 0) ::close(fd);
+    }
+
+    // 持有 send_mutex 时调用。
+    SendResult checkSend(std::size_t size) const {
+        if (!accepting) return SendResult::Closed;
+        if (size > max_pending_bytes - writer.readable()) return SendResult::QueueFull;
+        return SendResult::Queued;
     }
 
     int fd;
@@ -26,7 +35,14 @@ struct Connection::Impl {
     const std::uint64_t id;
 
     NetworkBuffer reader;
-    NetworkBuffer writer;
+
+    const std::size_t max_pending_bytes;
+    mutable std::mutex send_mutex;
+    NetworkBuffer writer{0};
+    bool accepting = true;
+    bool write_update_pending = false;
+    std::size_t pending_posts = 0;
+
     std::shared_ptr<BytesCallback> on_read;
     std::shared_ptr<Callback> on_read_end;
     Callback on_close;
@@ -41,8 +57,9 @@ struct Connection::Impl {
     std::optional<detail::EventLoop::TimerId> close_timer;
 };
 
-Connection::Connection(int fd, std::shared_ptr<detail::EventLoop> loop, std::uint64_t id)
-    : impl_(std::make_unique<Impl>(fd, loop, id)) {}
+Connection::Connection(int fd, std::shared_ptr<detail::EventLoop> loop, std::uint64_t id,
+                       std::size_t max_pending_bytes)
+    : impl_(std::make_unique<Impl>(fd, loop, id, max_pending_bytes)) {}
 
 Connection::~Connection() = default;
 
@@ -74,26 +91,81 @@ void Connection::setTransportCloseCallback(Callback callback) {
 
 bool Connection::post(std::function<void()> task) {
     if (isClosed()) return false;
-    const auto loop = impl_->loop.lock();
+
+    auto& state = *impl_;
+    const auto loop = state.loop.lock();
     if (!loop) return false;
 
-    return loop->runInLoop([self = shared_from_this(), task = std::move(task)] {
+    auto run = [self = shared_from_this(), task = std::move(task)] {
         try {
             task();
         } catch (...) {
             self->handleClose();
         }
-    });
+        {
+            std::lock_guard<std::mutex> lock(self->impl_->send_mutex);
+            --self->impl_->pending_posts;
+        }
+        self->maybeClose();
+    };
+
+    if (loop->isInLoopThread()) {
+        bool accepted = false;
+        loop->runInLoop([&] {
+            {
+                std::lock_guard<std::mutex> lock(state.send_mutex);
+                if (!state.accepting) return;
+                ++state.pending_posts;
+            }
+            accepted = true;
+            run();
+        });
+        return accepted;
+    }
+
+    std::lock_guard<std::mutex> lock(state.send_mutex);
+    if (!state.accepting || !loop->runInLoop(std::move(run))) return false;
+    ++state.pending_posts;
+    return true;
 }
 
-void Connection::send(std::vector<char> bytes) {
-    if (bytes.empty()) return;
+SendResult Connection::send(std::vector<char> bytes) {
+    auto& state = *impl_;
+    const auto loop = state.loop.lock();
+    if (!loop) return SendResult::Closed;
 
-    post([self = shared_from_this(), bytes = std::move(bytes)] {
-        if (self->isClosed()) return;
-        self->impl_->writer.append(bytes.data(), bytes.size());
-        self->updateEvents();
-    });
+    if (loop->isInLoopThread()) {
+        auto result = SendResult::Closed;
+        loop->runInLoop([&] {
+            {
+                std::lock_guard<std::mutex> lock(state.send_mutex);
+                result = state.checkSend(bytes.size());
+                if (result != SendResult::Queued || bytes.empty()) return;
+                state.writer.append(bytes.data(), bytes.size());
+            }
+            refreshWriteInterest();
+        });
+        return result;
+    }
+
+    std::lock_guard<std::mutex> lock(state.send_mutex);
+    const auto result = state.checkSend(bytes.size());
+    if (result != SendResult::Queued || bytes.empty()) return result;
+
+    // 最多投递一次可写事件更新。所有待发字节都存入 writer，
+    // 因此发送额度也会计入跨线程提交的数据。
+    if (!state.write_update_pending) {
+        if (!loop->runInLoop([self = shared_from_this()] {
+            {
+                std::lock_guard<std::mutex> lock(self->impl_->send_mutex);
+                self->impl_->write_update_pending = false;
+            }
+            self->refreshWriteInterest();
+        })) return SendResult::Closed;
+        state.write_update_pending = true;
+    }
+    state.writer.append(bytes.data(), bytes.size());
+    return SendResult::Queued;
 }
 
 void Connection::close() {
@@ -129,7 +201,11 @@ void Connection::beginWork() {
 }
 
 void Connection::finishWork() {
-    post([self = shared_from_this()] {
+    const auto loop = impl_->loop.lock();
+    if (!loop || isClosed()) return;
+
+    // 已由 beginWork 登记的任务可在最终排空阶段完成。
+    loop->runInLoop([self = shared_from_this()] {
         if (self->isClosed()) return;
         auto& remaining = self->impl_->pending_work;
         assert(remaining > 0);
@@ -182,8 +258,10 @@ void Connection::handleRead() {
     }
 
     if (received_eof) {
-        state.read_eof = true;
         if (const auto callback = state.on_read_end) (*callback)(shared_from_this());
+
+        // 等 EOF 回调返回后再标记结束，允许回调内同步投递任务并排队响应。
+        state.read_eof = true;
         updateEvents();
         maybeClose();
     }
@@ -191,7 +269,12 @@ void Connection::handleRead() {
 
 void Connection::handleWrite() {
     auto& state = *impl_;
-    if (state.writer.write_to_fd(state.fd) < 0) {
+    ssize_t written;
+    {
+        std::lock_guard<std::mutex> lock(state.send_mutex);
+        written = state.writer.write_to_fd(state.fd);
+    }
+    if (written < 0) {
         handleClose();
         return;
     }
@@ -199,9 +282,22 @@ void Connection::handleWrite() {
     maybeClose();
 }
 
+void Connection::refreshWriteInterest() {
+    try {
+        updateEvents();
+    } catch (...) {
+        handleClose();
+    }
+}
+
 void Connection::handleClose() {
     auto& state = *impl_;
-    if (state.closed.exchange(true)) return;
+    {
+        std::lock_guard<std::mutex> lock(state.send_mutex);
+        if (state.closed.exchange(true)) return;
+        state.accepting = false;
+        const auto discarded = std::move(state.writer);
+    }
 
     const auto self = shared_from_this();
     if (const auto loop = state.loop.lock()) {
@@ -234,7 +330,10 @@ void Connection::updateEvents() {
 
     std::uint32_t events = EPOLLET;
     if (!state.read_eof && !state.read_paused) events |= EPOLLIN | EPOLLRDHUP;
-    if (state.writer.readable() > 0) events |= EPOLLOUT;
+    {
+        std::lock_guard<std::mutex> lock(state.send_mutex);
+        if (state.writer.readable() > 0) events |= EPOLLOUT;
+    }
     loop->modEvent(state.fd, events);
 }
 
@@ -250,16 +349,26 @@ void Connection::pauseRead() {
 }
 
 void Connection::maybeClose() {
-    const auto& state = *impl_;
-    if ((state.read_eof || state.draining) && state.pending_work == 0 && state.writer.readable() == 0) {
-        handleClose();
+    auto& state = *impl_;
+    if (isClosed() || (!state.read_eof && !state.draining) || state.pending_work != 0) return;
+
+    {
+        std::lock_guard<std::mutex> lock(state.send_mutex);
+        if (state.writer.readable() != 0 || state.pending_posts != 0) return;
+        // 在检查队列为空的同一个临界区内关闭接收入队。
+        state.accepting = false;
     }
+    handleClose();
 }
 
 void Connection::closeAfterFlush(Duration timeout) {
     if (isClosed() || impl_->draining) return;
 
     impl_->draining = true;
+    {
+        std::lock_guard<std::mutex> lock(impl_->send_mutex);
+        impl_->accepting = false;
+    }
     pauseRead();
     maybeClose();
     if (isClosed()) return;

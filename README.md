@@ -48,7 +48,10 @@ int main() {
     xnet::ServerCallbacks callbacks;
     callbacks.on_bytes = [](const xnet::Connection::Ptr& connection,
                             std::string_view bytes) {
-        connection->send(std::vector<char>(bytes.begin(), bytes.end()));
+        if (connection->send(std::vector<char>(bytes.begin(), bytes.end())) ==
+            xnet::SendResult::QueueFull) {
+            connection->close();
+        }
     };
 
     xnet::TcpServer server(options, std::move(callbacks));
@@ -59,6 +62,6 @@ int main() {
 ## Callbacks and shutdown
 
 - `on_open`, `on_bytes`, `on_read_end`, and `on_close` run on the connection's I/O thread. Callbacks for different connections can run concurrently.
-- The `on_bytes` view is valid only during the callback. Copy the bytes if they need to outlive it, and parse the stream with arbitrary chunk boundaries in mind.
+- The `on_bytes` view is valid only during the callback. Copy the bytes if they need to outlive it, and parse the stream with arbitrary chunk boundaries in mind. Handle `SendResult::QueueFull` when the connection reaches its pending-byte limit.
 - To keep a connection open while processing a request off-thread, call `beginWork()` in the I/O callback, queue any reply with `send()`, and then call `finishWork()`. The `on_read_end` callback signals that the peer has finished sending.
 - `run()` blocks its caller. For an orderly shutdown, call `stop()` from a separate management thread and join the thread running `run()` before destroying the server. `stop()` stops accepting connections and reading bytes, runs the optional hook while the I/O threads are still active, and then drains pending writes. The flush timeout starts when the hook returns. Keep calls to that server's run and stop methods outside the hook.

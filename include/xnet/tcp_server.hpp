@@ -16,6 +16,10 @@ struct ServerOptions {
     std::uint16_t port = 0;
     std::size_t io_threads = 1;
     int backlog = 5;
+
+    // 每条连接待发送字节的上限，包含跨线程提交。
+    // 已写入套接字的字节会归还额度。设为零时只接收空发送。
+    std::size_t max_pending_bytes = 4 * 1024 * 1024;
 };
 
 // Callbacks for a connection run on its owning I/O thread. on_open can
@@ -38,10 +42,10 @@ public:
     // Run once, blocking the caller. A startup failure returns 1.
     int run();
 
-    // Call from a management thread outside the server callbacks and hook.
-    // Stop reads, invoke the hook with I/O loops running, then drain and
-    // close all connections. The flush timeout starts after the hook.
-    // Join the thread calling run() before destroying the server.
+    // 在服务端回调和停机钩子以外的管理线程调用。
+    // 停止读取后保持 I/O 循环运行，允许停机钩子发送和投递任务。
+    // 钩子结束后逐个排空并关闭连接。连接进入最终排空时停止接收新提交。
+    // 排空超时从钩子结束后开始计时。销毁服务端前等待 run() 所在线程退出。
     void stop(std::function<void()> after_quiesce = {},
               std::chrono::milliseconds flush_timeout = std::chrono::seconds(5));
 

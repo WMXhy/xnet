@@ -235,7 +235,7 @@ void TcpServer::Impl::attachConnection(Worker& worker, SocketFd& socket, std::ui
     Connection::Ptr connection;
     try {
         const int fd = socket.get();
-        auto* owned = new Connection(fd, worker.loop, id);
+        auto* owned = new Connection(fd, worker.loop, id, options_.max_pending_bytes);
         socket.release();
         connection.reset(owned);
 
