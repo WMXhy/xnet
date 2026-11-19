@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(xnet_FOUND FALSE)
+    set(xnet_NOT_FOUND_MESSAGE "xnet requires a Linux target (including WSL).")
+    return()
+endif()
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+include("${CMAKE_CURRENT_LIST_DIR}/xnetTargets.cmake")
+check_required_components(xnet)

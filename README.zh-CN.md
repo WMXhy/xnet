@@ -16,6 +16,10 @@ cmake --build build
 
 测试覆盖二进制回环回显、TCP 半关闭及停机时发完待发送响应，并验证多个翻译单元同时包含公开头文件后仍能成功链接。仅构建库时可指定 `-DXNET_BUILD_TESTS=OFF`。
 
+## 使用已安装的 CMake 包
+
+构建后执行 `cmake --install build --prefix /path/to/prefix`。配置消费项目时传入 `-DCMAKE_PREFIX_PATH=/path/to/prefix`，通过 `find_package(xnet 0.1 CONFIG REQUIRED)` 查找包并链接 `xnet::xnet`。整个安装前缀可以搬迁。[安装包指南](docs/usage.zh-CN.md#使用已安装的-cmake-包)给出了[回显与换行协议示例](examples/installed)的完整步骤。
+
 ## 接入 CMake 项目
 
 将 xnet 源码放到 `third_party/xnet`，然后在你的项目的 `CMakeLists.txt` 中加入以下内容。

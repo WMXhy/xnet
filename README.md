@@ -16,6 +16,10 @@ cmake --build build
 
 The tests cover binary loopback, TCP half-close, and the delivery of pending replies during shutdown. The test executable also verifies that the public headers can be included and linked from multiple translation units. Use `-DXNET_BUILD_TESTS=OFF` to build just the library.
 
+## Use the installed CMake package
+
+After building xnet, install it with `cmake --install build --prefix /path/to/prefix`. Point your application at that directory with `-DCMAKE_PREFIX_PATH=/path/to/prefix`, call `find_package(xnet 0.1 CONFIG REQUIRED)`, and link `xnet::xnet`. The prefix can be moved as a whole. See the [installed-package walkthrough](docs/usage.md#consume-an-installed-package) for the [echo and line protocol examples](examples/installed).
+
 ## Use xnet in a CMake project
 
 Place the xnet source in `third_party/xnet` and add the following to your project's `CMakeLists.txt`.

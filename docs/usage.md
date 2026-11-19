@@ -16,6 +16,24 @@ cmake --build build
 
 A standalone build enables tests by default. Set `-DXNET_BUILD_TESTS=OFF` when you only need the library.
 
+## Consume an installed package
+
+Build xnet as a standalone project using the steps above. Run the following commands from the xnet source directory. They install the library, move the entire prefix, and build the [two examples](../examples/installed) in a separate project using the moved package.
+
+```sh
+demo_root=$(mktemp -d)
+cmake --install build --prefix "$demo_root/xnet"
+mv "$demo_root/xnet" "$demo_root/relocated-xnet"
+cp -R examples/installed "$demo_root/consumer"
+cmake -S "$demo_root/consumer" -B "$demo_root/consumer/build" \
+    -DCMAKE_PREFIX_PATH="$demo_root/relocated-xnet"
+cmake --build "$demo_root/consumer/build"
+```
+
+Run `"$demo_root/consumer/build/xnet_echo"` or `"$demo_root/consumer/build/xnet_line_echo"`. Each prints a loopback port. Connect from another terminal with `nc 127.0.0.1 PORT`, using the printed number. The first program echoes raw bytes. The second waits for a newline and returns the complete line prefixed with `line: `. Press Enter in the server terminal to stop it.
+
+For your own project, use the same `find_package(xnet 0.1 CONFIG REQUIRED)` call and link your target to `xnet::xnet`. The package includes the public headers, static archive, and CMake config and version files. Keep `CMAKE_INSTALL_LIBDIR` and `CMAKE_INSTALL_INCLUDEDIR` relative to the prefix. Installation is enabled by default in a standalone build. Use `-DXNET_INSTALL=ON` to enable it explicitly when building xnet as a subproject. Python 3.8 or later enables the package relocation regression in CTest.
+
 ## Add xnet to an application
 
 From the root of your application, put a copy of xnet in `third_party/xnet`. If you keep the source elsewhere, pass its path to `add_subdirectory` and specify a separate binary directory as the second argument.

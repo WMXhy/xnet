@@ -16,6 +16,24 @@ cmake --build build
 
 独立构建默认启用测试。仅构建库时，可以在配置阶段指定 `-DXNET_BUILD_TESTS=OFF`。
 
+## 使用已安装的 CMake 包
+
+先按上一节独立构建 xnet，再从 xnet 源码目录执行以下命令。命令会安装库、移动整个安装前缀，然后在独立工程中用搬迁后的包构建[两个示例](../examples/installed)。
+
+```sh
+demo_root=$(mktemp -d)
+cmake --install build --prefix "$demo_root/xnet"
+mv "$demo_root/xnet" "$demo_root/relocated-xnet"
+cp -R examples/installed "$demo_root/consumer"
+cmake -S "$demo_root/consumer" -B "$demo_root/consumer/build" \
+    -DCMAKE_PREFIX_PATH="$demo_root/relocated-xnet"
+cmake --build "$demo_root/consumer/build"
+```
+
+运行 `"$demo_root/consumer/build/xnet_echo"` 或 `"$demo_root/consumer/build/xnet_line_echo"`。程序会打印回环端口，在另一终端用 `nc 127.0.0.1 PORT` 连接，替换其中的端口号。第一个程序原样回显字节。第二个等到换行后返回完整行，并添加 `line: ` 前缀。在服务端终端按回车即可停机。
+
+自己的工程同样使用 `find_package(xnet 0.1 CONFIG REQUIRED)`，并将目标链接到 `xnet::xnet`。安装包包含公开头文件、静态库、CMake 配置和版本文件。`CMAKE_INSTALL_LIBDIR` 和 `CMAKE_INSTALL_INCLUDEDIR` 应为相对于安装前缀的目录。独立构建默认启用安装，作为子项目时可通过 `-DXNET_INSTALL=ON` 显式启用。安装 Python 3.8 或更新版本后，CTest 会纳入安装包搬迁回归。
+
 ## 接入自己的 CMake 项目
 
 在应用根目录下，将 xnet 源码放到 `third_party/xnet`。如果源码位于其他目录，可以给 `add_subdirectory` 传入源码路径，并用第二个参数指定独立的构建目录。
